@@ -1,5 +1,6 @@
 import { Injectable } from '@angular/core';
 import { BehaviorSubject, Observable } from 'rxjs';
+import { AuthService } from './auth.service';
 
 export interface PendingApplication {
   id: number;
@@ -25,75 +26,77 @@ export interface PendingApplication {
   approvalStage?: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
   createdAt?: string;
+  assignedOfficerName?: string;
 }
 
 @Injectable({
   providedIn: 'root'
 })
 export class EmployeeService {
-  private initialApplications: PendingApplication[] = [
-    {
-      id: 1045,
-      registrationId: 'USR-1045',
-      firstName: 'Rahul',
-      middleName: 'K',
-      lastName: 'Sharma',
-      dob: '1992-05-15',
-      gender: 'Male',
-      phone: '9988776655',
-      email: 'rahul.s.duplicate@gmail.com',
-      pan: 'ABCDE1234F',
-      address: 'Flat 402, Green Valley Apartments, MG Road',
-      district: 'Bengaluru Urban',
-      state: 'Karnataka',
-      pin: '560001',
-      qualification: 'B.Tech IT',
-      organization: 'TechCorp Solutions',
-      experienceYears: 5,
-      skills: 'Web Apps, Cloud',
-      emergencyContact: '9988776600',
-      missingDocuments: 'Proof of Address',
-      approvalStage: 'Identity & Document Verification',
-      status: 'PENDING',
-      createdAt: '2026-07-30 14:20'
-    },
-    {
-      id: 1043,
-      registrationId: 'USR-1043',
-      firstName: 'Priya',
-      middleName: 'Rani',
-      lastName: 'Verma',
-      dob: '1995-08-20',
-      gender: 'Female',
-      phone: '9123456789',
-      email: 'priya.v@gmail.com',
-      pan: 'XYZPS9876Q',
-      address: 'House 12, Park Street',
-      district: 'Kolkata',
-      state: 'West Bengal',
-      pin: '700016',
-      qualification: 'M.Sc Biotechnology',
-      organization: 'BioInnovate Labs',
-      experienceYears: 3,
-      skills: 'Lab Research',
-      emergencyContact: '9123456700',
-      missingDocuments: 'Self-Attested Residence Certificate',
-      approvalStage: 'Document Audit',
-      status: 'PENDING',
-      createdAt: '2026-07-30 11:15'
-    }
-  ];
+  private backendUrl = 'http://localhost:8080';
 
-  private applicationsSubject = new BehaviorSubject<PendingApplication[]>(this.initialApplications);
+  private applicationsSubject = new BehaviorSubject<PendingApplication[]>([]);
   public applications$: Observable<PendingApplication[]> = this.applicationsSubject.asObservable();
 
-  constructor() {}
+  constructor(private authService: AuthService) {
+    this.loadApplicationsFromBackend();
+  }
+
+  public async loadApplicationsFromBackend(): Promise<void> {
+    const token = this.authService.session.token;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    try {
+      const [pendingRes, approvedRes, rejectedRes] = await Promise.all([
+        fetch(`${this.backendUrl}/api/employee/pending`, { headers }),
+        fetch(`${this.backendUrl}/api/employee/approved`, { headers }),
+        fetch(`${this.backendUrl}/api/employee/rejected`, { headers })
+      ]);
+
+      let all: PendingApplication[] = [];
+
+      if (pendingRes.ok) {
+        const pending: PendingApplication[] = await pendingRes.json();
+        all = all.concat(pending.map(p => ({ ...p, status: 'PENDING' as const })));
+      }
+      if (approvedRes.ok) {
+        const approved: PendingApplication[] = await approvedRes.json();
+        all = all.concat(approved.map(a => ({ ...a, status: 'APPROVED' as const })));
+      }
+      if (rejectedRes.ok) {
+        const rejected: PendingApplication[] = await rejectedRes.json();
+        all = all.concat(rejected.map(r => ({ ...r, status: 'REJECTED' as const })));
+      }
+
+      if (all.length > 0) {
+        this.applicationsSubject.next(all);
+      }
+    } catch (err) {
+      console.warn('Backend unavailable, using cached local data', err);
+    }
+  }
 
   public getApplications(): PendingApplication[] {
     return this.applicationsSubject.value;
   }
 
-  public approveApplication(id: number) {
+  public async approveApplication(id: number): Promise<void> {
+    const token = this.authService.session.token;
+    try {
+      await fetch(`${this.backendUrl}/api/employee/approve/${id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : ''
+        }
+      });
+    } catch (e) {}
+
     const list = this.applicationsSubject.value.map(app => {
       if (app.id === id) {
         return { ...app, status: 'APPROVED' as const, approvalStage: 'Approved & Active' };
@@ -101,16 +104,30 @@ export class EmployeeService {
       return app;
     });
     this.applicationsSubject.next(list);
+    this.loadApplicationsFromBackend();
   }
 
-  public rejectApplication(id: number) {
+  public async rejectApplication(id: number, reason?: string): Promise<void> {
+    const token = this.authService.session.token;
+    try {
+      await fetch(`${this.backendUrl}/api/employee/reject/${id}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : ''
+        },
+        body: JSON.stringify({ reason: reason || 'Document Audit Discrepancy' })
+      });
+    } catch (e) {}
+
     const list = this.applicationsSubject.value.map(app => {
       if (app.id === id) {
-        return { ...app, status: 'REJECTED' as const, approvalStage: 'Registration Rejected' };
+        return { ...app, status: 'REJECTED' as const, approvalStage: 'Initial Review' };
       }
       return app;
     });
     this.applicationsSubject.next(list);
+    this.loadApplicationsFromBackend();
   }
 
   public addApplication(newApp: PendingApplication) {

@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { EmployeeService, PendingApplication } from '../../services/employee.service';
 import { DuplicatePanelComponent } from '../duplicate-panel/duplicate-panel.component';
 import { AIService } from '../../services/ai.service';
-import { Observable } from 'rxjs';
+import { Observable, map } from 'rxjs';
 
 @Component({
   selector: 'app-employee-dashboard',
@@ -240,6 +240,18 @@ export class EmployeeDashboardComponent implements OnInit {
   ) {}
 
   ngOnInit() {
+    this.employeeService.loadApplicationsFromBackend();
+
+    this.pendingApps$ = this.employeeService.applications$.pipe(
+      map(apps => apps.filter(a => a.status === 'PENDING'))
+    );
+    this.approvedApps$ = this.employeeService.applications$.pipe(
+      map(apps => apps.filter(a => a.status === 'APPROVED'))
+    );
+    this.rejectedApps$ = this.employeeService.applications$.pipe(
+      map(apps => apps.filter(a => a.status === 'REJECTED'))
+    );
+
     this.employeeService.applications$.subscribe(apps => {
       this.allApps = apps;
     });

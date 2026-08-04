@@ -46,7 +46,32 @@ export class AIService {
   ]);
   public chatMessages$: Observable<ChatMessage[]> = this.chatMessagesSubject.asObservable();
 
-  constructor(private authService: AuthService) {}
+  constructor(private authService: AuthService) {
+    this.authService.currentSession$.subscribe(session => {
+      this.resetChatForSession(session);
+    });
+  }
+
+  private resetChatForSession(session: any) {
+    let welcomeText = '';
+    const role = ((session && session.role) || 'PUBLIC').toUpperCase();
+
+    if (role === 'ROLE_EMPLOYEE') {
+      welcomeText = `👋 Welcome Officer **${session.fullName || 'Vikram Aditya'}**. Your session is active with **Level 3 Enterprise Intelligence**. You can query approved citizens, inspect pending queues, run duplicate detection, or ask natural language SQL queries.`;
+    } else if (role === 'ROLE_USER') {
+      welcomeText = `👋 Welcome **${session.fullName || 'Citizen'}**! Your session is active with **Level 2 Workflow Assistant**. I can help you track your registration status (${session.registrationId || 'USR-XXXX'}), view document checklists, and answer portal queries.`;
+    } else {
+      welcomeText = `👋 Welcome to the **Government Digital Services Portal**. I am operating at **Level 1 Public Intelligence**. Ask me about portal guidelines, registration steps, or public policy documents.`;
+    }
+
+    this.chatMessagesSubject.next([
+      {
+        sender: 'ai',
+        text: welcomeText,
+        timestamp: new Date()
+      }
+    ]);
+  }
 
   public setActiveAppContext(app: any | null) {
     this.activeAppContextSubject.next(app);
