@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "start": "python -m http.server 4200",
     "ng": "ng",
-    "start": "ng serve --port 4200",
     "build": "ng build"
   },
   "dependencies": {

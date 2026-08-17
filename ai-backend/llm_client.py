@@ -38,7 +38,7 @@ class LLMClient:
     def model(self) -> str:
         return self._get_config()["model"]
 
-    def generate(self, system_prompt: str, user_message: str, temperature: float = 0.3, max_tokens: int = 1200) -> Dict[str, Any]:
+    def generate(self, system_prompt: str, user_message: str, temperature: float = 0.3, max_tokens: int = 2500) -> Dict[str, Any]:
         """
         Generates non-streaming completion text using Ollama or OpenAI API.
         """
@@ -126,7 +126,7 @@ class LLMClient:
             "error": f"Failed to get completion from {base_url}"
         }
 
-    def generate_stream(self, system_prompt: str, user_message: str, temperature: float = 0.3, max_tokens: int = 1200) -> Generator[str, None, None]:
+    def generate_stream(self, system_prompt: str, user_message: str, temperature: float = 0.3, max_tokens: int = 2500) -> Generator[str, None, None]:
         """
         Yields text tokens as they arrive from Ollama or OpenAI streaming API.
         """

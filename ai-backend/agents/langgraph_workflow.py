@@ -64,6 +64,102 @@ def get_role_capabilities(role: str) -> Dict[str, Any]:
         }
 
 
+def _execute_citizen_lookup(user_message: str, auth_token: Optional[str], active_app_context: Optional[dict]):
+    tools_used = ["CitizenLookupTool"]
+    context_used = False
+
+    approved_list = mcp_tools.get_approved_users(auth_token) or []
+    pending_list = mcp_tools.get_pending_users(auth_token) or []
+    rejected_list = mcp_tools.get_rejected_users(auth_token) or []
+    all_citizens = approved_list + pending_list + rejected_list
+
+    msg = user_message.lower()
+    is_approved_query = any(k in msg for k in ["approved citizen", "approved user", "approved list", "verified citizens", "show approved", "list approved", "all approved", "approved"])
+    is_pending_query = any(k in msg for k in ["pending citizen", "pending application", "pending queue", "pending list", "show pending", "list pending", "unapproved", "pending"])
+    is_context_ref = active_app_context and any(k in msg for k in [
+        "this guy", "this applicant", "this user", "this person", "this citizen",
+        "this record", "current applicant", "current user", "his", "her", "he", "she"
+    ])
+
+    results = []
+
+    if is_context_ref and active_app_context:
+        context_used = True
+        tools_used.append("ActiveContextLookupTool")
+        target_pan = active_app_context.get("pan")
+        target_reg = active_app_context.get("registrationId")
+        target_email = active_app_context.get("email")
+        matched_in_db = [
+            c for c in all_citizens
+            if (target_pan and c.get("pan") == target_pan) or
+               (target_reg and c.get("registrationId") == target_reg) or
+               (target_email and c.get("email") == target_email)
+        ]
+        results = matched_in_db if matched_in_db else [active_app_context]
+
+    elif is_approved_query and is_pending_query:
+        tools_used.extend(["ApprovedCitizensFetchTool", "PendingQueueFetchTool"])
+        results = (approved_list + pending_list)[:10]
+
+    elif is_approved_query:
+        tools_used.append("ApprovedCitizensFetchTool")
+        results = approved_list
+
+    elif is_pending_query:
+        tools_used.append("PendingQueueFetchTool")
+        results = pending_list
+
+    else:
+        stop_phrases = [
+            "what is the address of", "what was the address of", "what is the pan of", "what was the pan of",
+            "what is the phone number of", "what was the phone number of", "what is the phone of", "what was the phone of",
+            "what is the email of", "what was the email of", "what is the dob of", "what was the dob of",
+            "what is the date of birth of", "where does", "live", "reside",
+            "address of", "pan of", "phone of", "email of", "dob of", "date of birth of", "contact of",
+            "find citizen", "lookup citizen", "search citizen", "get citizen",
+            "show me", "tell me about", "details for", "info on", "information about",
+            "profile of", "who is", "find user", "search user", "show citizen",
+            "citizen named", "applicant named", "applicant with", "search for", "look up",
+            "what is the", "what was the", "give me the", "show me the", "tell me the",
+            "list", "return", "show", "all"
+        ]
+        query = user_message.strip()
+        for phrase in stop_phrases:
+            query = re.sub(re.escape(phrase), "", query, flags=re.IGNORECASE).strip()
+        query = query.strip("?.,! ").strip()
+        if not query:
+            query = user_message
+
+        results = mcp_tools.search_citizen(query, auth_token) or []
+
+        if not results:
+            q_tokens = [t.lower() for t in re.split(r'\s+', query) if len(t) > 1 and t.lower() not in ["and", "or", "the", "list", "return", "show", "pending", "approved", "citizen", "citizens"]]
+            if q_tokens:
+                for c in all_citizens:
+                    c_str = json.dumps(c).lower()
+                    if any(t in c_str for t in q_tokens):
+                        if c not in results:
+                            results.append(c)
+
+        if not results:
+            results = (approved_list + pending_list)[:10]
+
+    retrieved_data_str = json.dumps({
+        "user_query": user_message,
+        "matching_results_count": len(results),
+        "matching_citizens": results[:10],
+        "approved_citizens": approved_list[:5],
+        "pending_applications": pending_list[:5],
+        "rejected_applications": rejected_list[:5],
+        "approved_citizens_count": len(approved_list),
+        "pending_applications_count": len(pending_list),
+        "rejected_applications_count": len(rejected_list),
+        "total_citizens_count": len(all_citizens)
+    }, indent=2)
+
+    return tools_used, context_used, retrieved_data_str
+
+
 def process_agent_chat(
     user_message: str,
     role: str = "PUBLIC",
@@ -146,87 +242,11 @@ def process_agent_chat(
         tool_metadata = dup_result
 
     elif intent == "CITIZEN_LOOKUP":
-        tools_used.append("CitizenLookupTool")
-        msg = user_message.lower()
-
-        is_approved_query = any(k in msg for k in ["approved citizen", "approved user", "approved list", "verified citizens", "show approved", "list approved", "all approved"])
-        is_pending_query = any(k in msg for k in ["pending citizen", "pending application", "pending queue", "pending list", "show pending", "list pending", "unapproved"])
-        is_context_ref = active_app_context and any(k in msg for k in [
-            "this guy", "this applicant", "this user", "this person", "this citizen",
-            "this record", "current applicant", "current user", "his", "her", "he", "she"
-        ])
-
-        approved_list = mcp_tools.get_approved_users(auth_token) or []
-        pending_list = mcp_tools.get_pending_users(auth_token) or []
-        all_citizens = approved_list + pending_list
-        results = []
-
-        if is_context_ref and active_app_context:
-            context_used = True
-            tools_used.append("ActiveContextLookupTool")
-            target_pan = active_app_context.get("pan")
-            target_reg = active_app_context.get("registrationId")
-            target_email = active_app_context.get("email")
-            matched_in_db = [
-                c for c in all_citizens
-                if (target_pan and c.get("pan") == target_pan) or
-                   (target_reg and c.get("registrationId") == target_reg) or
-                   (target_email and c.get("email") == target_email)
-            ]
-            if matched_in_db:
-                results = matched_in_db
-            else:
-                results = [active_app_context]
-        elif is_approved_query:
-            tools_used.append("ApprovedCitizensFetchTool")
-            results = approved_list
-        elif is_pending_query:
-            tools_used.append("PendingQueueFetchTool")
-            results = pending_list
-        else:
-            import re
-            stop_phrases = [
-                "what is the address of", "what was the address of", "what is the pan of", "what was the pan of",
-                "what is the phone number of", "what was the phone number of", "what is the phone of", "what was the phone of",
-                "what is the email of", "what was the email of", "what is the dob of", "what was the dob of",
-                "what is the date of birth of", "where does", "live", "reside",
-                "address of", "pan of", "phone of", "email of", "dob of", "date of birth of", "contact of",
-                "find citizen", "lookup citizen", "search citizen", "get citizen",
-                "show me", "tell me about", "details for", "info on", "information about",
-                "profile of", "who is", "find user", "search user", "show citizen",
-                "citizen named", "applicant named", "applicant with", "search for", "look up",
-                "what is the", "what was the", "give me the", "show me the", "tell me the"
-            ]
-            query = user_message.strip()
-            for phrase in stop_phrases:
-                query = re.sub(re.escape(phrase), "", query, flags=re.IGNORECASE).strip()
-            query = query.strip("?.,! ").strip()
-            if not query:
-                query = user_message
-
-            results = mcp_tools.search_citizen(query, auth_token) or []
-
-            # Fallback search if exact query yielded no direct results
-            if not results:
-                q_tokens = [t.lower() for t in re.split(r'\s+', query) if len(t) > 1]
-                if q_tokens:
-                    for c in all_citizens:
-                        c_str = json.dumps(c).lower()
-                        if any(t in c_str for t in q_tokens):
-                            if c not in results:
-                                results.append(c)
-
-            if not results and active_app_context:
-                results = [active_app_context]
-                context_used = True
-
-        retrieved_data_str = json.dumps({
-            "user_query": user_message,
-            "matching_results_count": len(results),
-            "matching_citizens": results,
-            "approved_citizens_count": len(approved_list),
-            "pending_applications_count": len(pending_list)
-        }, indent=2)
+        tools_used_c, context_used_c, retrieved_data_str = _execute_citizen_lookup(
+            user_message, auth_token, active_app_context
+        )
+        tools_used.extend(tools_used_c)
+        context_used = context_used_c
 
     elif intent == "SQL":
         tools_used.append("SQLStatsTool")
@@ -272,7 +292,7 @@ def process_agent_chat(
     )
 
     # ── 4. LLM CALL (Role-based Max Tokens: Public=600, Authenticated=1200) ────
-    max_tok = 600 if (role or "PUBLIC").upper() == "PUBLIC" else 1200
+    max_tok = 600 if (role or "PUBLIC").upper() == "PUBLIC" else 2500
     llm_res = llm_client.generate(system_prompt, user_message, max_tokens=max_tok)
 
     if llm_res.get("success"):
@@ -324,6 +344,7 @@ def _build_system_prompt(role, capabilities, intent, tools_used,
         "7. For WORKFLOW: Explain the citizen's actual current status, assigned officer, and steps.",
         "8. For FAQ/RAG: Provide accurate portal guidance based on the knowledge base result.",
         "9. NEVER say 'Rahul Sharma', 'Priya Verma', 'Officer Vikram', 'ABCDE1234F', or any specific name/number unless it appears in the tool data above.",
+        "10. FOR BROAD DATASET QUERIES (e.g. 'all approved citizens', 'all pending applications'): Provide a concise dashboard statistics overview (Total, Approved, Pending, Rejected), display the top 5 representative records, and append a token-economic notice: '⚡ **Token-Optimized Summary**: Displaying top 5 records. To view specific citizen details, search by Name, PAN, or Registration ID (e.g., USR-1042).' Ensure the output is complete and never truncated.",
     ]
 
     return "\n".join(parts)
@@ -383,10 +404,12 @@ def _synthesize_fallback_response(intent: str, role: str, retrieved_data: str,
         )
 
     elif intent == "CITIZEN_LOOKUP":
-        citizens = data.get("matching_citizens") or data.get("citizens") or []
+        approved_list = data.get("approved_citizens") or []
+        pending_list = data.get("pending_applications") or []
+        citizens = data.get("matching_citizens") or (approved_list + pending_list)[:10]
         query = data.get("user_query") or data.get("search_query", "")
-        approved_cnt = data.get("approved_citizens_count", 0)
-        pending_cnt = data.get("pending_applications_count", 0)
+        approved_cnt = data.get("approved_citizens_count") or len(approved_list)
+        pending_cnt = data.get("pending_applications_count") or len(pending_list)
 
         if not citizens:
             return (
@@ -417,7 +440,10 @@ def _synthesize_fallback_response(intent: str, role: str, retrieved_data: str,
             attr_highlight = f"📅 **Date of Birth for {c_name}:**\n**{c_first.get('dob', 'N/A')}**\n\n---\n\n"
 
         lines = []
-        for c in citizens[:10]:
+        display_limit = 5
+        displayed_citizens = citizens[:display_limit]
+
+        for c in displayed_citizens:
             full_name = f"{c.get('firstName', '')} {c.get('middleName', '') or ''} {c.get('lastName', '')}".strip() or c.get("username", "N/A")
             status = c.get('status', 'APPROVED')
             status_icon = "🟢 APPROVED" if status == "APPROVED" else ("⏳ PENDING" if status == "PENDING" else f"🔴 {status}")
@@ -430,11 +456,22 @@ def _synthesize_fallback_response(intent: str, role: str, retrieved_data: str,
                 f"- **DOB:** `{c.get('dob', 'N/A')}` | **Gender:** `{c.get('gender', 'N/A')}`\n"
                 f"- **Organization:** {c.get('organization', 'N/A')} | **Qualification:** {c.get('qualification', 'N/A')}"
             )
+
+        truncation_notice = ""
+        if len(citizens) > display_limit:
+            truncation_notice = (
+                f"\n\n---\n\n"
+                f"⚡ **Token-Optimized Summary Notice**:\n"
+                f"Displaying top **{display_limit}** of **{len(citizens)}** records to prevent token overflow. "
+                f"To inspect any specific citizen in full detail, please search by Name, PAN, or Registration ID (e.g. `address of Rahul Sharma` or `USR-1042`)."
+            )
+
         return (
             model_label +
-            f"### 🔍 Citizen Details\n\n" +
+            f"### 🔍 Citizen Directory Summary\n\n" +
             attr_highlight +
-            "\n\n".join(lines)
+            "\n\n".join(lines) +
+            truncation_notice
         )
 
     elif intent == "SQL":
@@ -521,11 +558,13 @@ def process_agent_chat_stream(
     active_app_context: Optional[Dict[str, Any]] = None
 ):
     """
-    Streaming version of LangGraph Agentic Orchestrator.
+    True streaming version of LangGraph Agentic Orchestrator.
     Yields NDJSON event strings:
       1. Metadata header event: {"type": "metadata", "intent": ..., "tools_used": ..., "allowed": True}
-      2. Token events: {"type": "token", "content": "..."}
+      2. Token events: {"type": "token", "content": "..."} — streamed live from LLM or chunked fallback
     """
+    import time
+
     capabilities = get_role_capabilities(role)
     intent = classify_intent(user_message, active_app_context, role)
 
@@ -551,27 +590,114 @@ def process_agent_chat_stream(
         yield json.dumps({"type": "token", "content": restricted_msg}) + "\n"
         return
 
-    # Non-restricted flow — run full response via process_agent_chat
-    res = process_agent_chat(user_message, role, auth_token, user_details, active_app_context)
+    # ── 1. INTENT-BASED TOOL INVOCATION (same logic as process_agent_chat) ──
+    tools_used: List[str] = []
+    retrieved_data_str = ""
+    context_used = False
+    tool_metadata: Dict[str, Any] = {}
 
-    # Yield metadata first
+    if intent == "CITIZEN_LOOKUP":
+        tools_used_c, context_used_c, retrieved_data_str = _execute_citizen_lookup(
+            user_message, auth_token, active_app_context
+        )
+        tools_used.extend(tools_used_c)
+        context_used = context_used_c
+
+    elif intent == "DUPLICATE_DETECTION":
+        tools_used.append("DuplicateDetectionTool")
+        if active_app_context:
+            context_used = True
+            target = active_app_context
+        else:
+            target = user_details or {}
+        if auth_token:
+            approved = mcp_tools.get_approved_users(auth_token) or []
+            dup_result = run_duplicate_detection(target, approved, llm_client)
+            tool_metadata = dup_result
+            retrieved_data_str = json.dumps({
+                "duplicate_detection_result": dup_result,
+                "target_application": {
+                    "name": f"{target.get('firstName', '')} {target.get('lastName', '')}".strip() or target.get("fullName", "Applicant"),
+                    "registrationId": target.get("registrationId", "N/A")
+                },
+                "total_approved_citizens_checked": len(approved)
+            }, indent=2)
+
+    elif intent == "SQL":
+        tools_used.append("SQLStatsTool")
+        if auth_token:
+            stats = mcp_tools.get_dashboard_stats(auth_token)
+            pendings = mcp_tools.get_pending_users(auth_token) or []
+            retrieved_data_str = json.dumps({
+                "dashboard_statistics": stats,
+                "pending_applications": pendings
+            }, indent=2)
+
+    elif intent == "WORKFLOW":
+        tools_used.append("WorkflowStatusTool")
+        if auth_token:
+            profile = mcp_tools.get_my_profile(auth_token)
+            if profile:
+                context_used = True
+                grievances = mcp_tools.get_my_grievances(auth_token)
+                retrieved_data_str = json.dumps({
+                    "citizen_profile": profile,
+                    "grievances": grievances
+                }, indent=2)
+            elif user_details:
+                retrieved_data_str = json.dumps({"citizen_details": user_details}, indent=2)
+        elif user_details:
+            retrieved_data_str = json.dumps({"citizen_details": user_details}, indent=2)
+
+    elif intent == "FAQ":
+        tools_used.append("SemanticFAQTool")
+        faq_res = vector_store.search_faq(user_message)
+        retrieved_data_str = json.dumps(faq_res, indent=2)
+
+    else:
+        tools_used.append("ChromaDB_RAG_Tool")
+        rag_docs = vector_store.search_rag(user_message)
+        retrieved_data_str = json.dumps(rag_docs, indent=2)
+
+    # ── 2. YIELD METADATA HEADER ──
     yield json.dumps({
         "type": "metadata",
-        "intent": res.get("intent"),
-        "role": res.get("role"),
-        "allowed": res.get("allowed", True),
-        "tools_used": res.get("tools_used", []),
-        "active_context_used": res.get("active_context_used", False),
-        "llm_provider": res.get("llm_provider"),
-        "llm_model": res.get("llm_model")
+        "intent": intent,
+        "role": role,
+        "allowed": True,
+        "tools_used": tools_used,
+        "active_context_used": context_used,
+        "llm_provider": llm_client.provider,
+        "llm_model": llm_client.model
     }) + "\n"
 
-    # Now stream the content tokens
-    full_text = res.get("response", "")
-    
-    # Try live LLM streaming if available
-    # Yield tokens with a smooth chunk size
-    chunk_size = 15
-    for i in range(0, len(full_text), chunk_size):
-        chunk = full_text[i:i+chunk_size]
-        yield json.dumps({"type": "token", "content": chunk}) + "\n"
+    # ── 3. BUILD SYSTEM PROMPT ──
+    system_prompt = _build_system_prompt(
+        role, capabilities, intent, tools_used,
+        active_app_context, retrieved_data_str, user_details
+    )
+
+    # ── 4. ATTEMPT REAL LLM TOKEN STREAMING ──
+    max_tok = 600 if (role or "PUBLIC").upper() == "PUBLIC" else 2500
+    streamed_anything = False
+
+    try:
+        for token_chunk in llm_client.generate_stream(system_prompt, user_message, max_tokens=max_tok):
+            if token_chunk:
+                streamed_anything = True
+                yield json.dumps({"type": "token", "content": token_chunk}) + "\n"
+    except Exception as e:
+        print(f"[Stream Error] LLM streaming failed: {e}")
+
+    # ── 5. FALLBACK: If LLM streaming produced nothing, use fallback synthesis ──
+    if not streamed_anything:
+        fallback_text = _synthesize_fallback_response(
+            intent, role, retrieved_data_str, active_app_context, user_details, tool_metadata
+        )
+        # Stream fallback in natural-looking chunks
+        chunk_size = 20
+        for i in range(0, len(fallback_text), chunk_size):
+            chunk = fallback_text[i:i + chunk_size]
+            yield json.dumps({"type": "token", "content": chunk}) + "\n"
+            time.sleep(0.015)
+
